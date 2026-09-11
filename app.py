@@ -11,7 +11,7 @@ import re
 import torch
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
-model_name = "cahya/gpt2-small-indonesian"
+model_name = "cahya/gpt2-small-indonesian-522M"
 tokenizer = GPT2Tokenizer.from_pretrained(model_name)
 model = GPT2LMHeadModel.from_pretrained(model_name)
 model.eval()
