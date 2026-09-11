@@ -18,13 +18,13 @@ This repository implements an automated, multi-stage pipeline that collects, cle
 
 ```mermaid
 flowchart TD
-    A[Web News Index Pages\nDetik | CNN Indonesia | Tribunnews] -->|HTTP Requests / User-Agent| B[DOM Parser & Article Link Extractor]
-    B -->|Fetch Article Body| C[Boilerplate & Ad Sanitization]
-    C -->|Strip Ads & Regex Cleaning| D[Length & Language Filter]
-    D -->|< 50 Words / Non-ID| X[Dropped Article]
-    D -->|Passed| E[Statistical Heuristic Quality Filters]
-    E -->|Symbol / Digit / Repetitive / Caps Ratios| X
-    E -->|Passed Quality Checks| F[Export to Structured JSONL\narticles.jsonl]
+    A["Web News Index Pages<br/>Detik | CNN Indonesia | Tribunnews"] -->|"HTTP Requests / User-Agent"| B["DOM Parser & Article Link Extractor"]
+    B -->|"Fetch Article Body"| C["Boilerplate & Ad Sanitization"]
+    C -->|"Strip Ads & Regex Cleaning"| D["Length & Language Filter"]
+    D -->|"< 50 Words / Non-ID"| X["Dropped Article"]
+    D -->|"Passe  d"| E["Statistical Heuristic Quality Filters"]
+    E -->|"Symbol / Digit / Repetitive / Caps Ratios"| X
+    E -->|"Passed Quality Checks"| F["Export to Structured JSONL<br/>articles.jsonl"]
 ```
 
 ### 🛠️ Key Pipeline Stages
