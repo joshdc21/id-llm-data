@@ -8,6 +8,13 @@ from urllib.parse import urlparse
 # pyrefly: ignore [missing-import]
 from langdetect import detect
 import re
+import torch
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+
+model_name = "cahya/gpt2-small-indonesian"
+tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+model = GPT2LMHeadModel.from_pretrained(model_name)
+model.eval()
 
 # Header so you don't get blocked by the server
 hades = {
@@ -154,6 +161,20 @@ def all_caps_ratio(text):
 
     return True
 
+def calculate_perplexity(text):
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+
+    with torch.no_grad():
+        outputs = model(
+            input_ids=inputs["input_ids"],
+            labels=inputs["input_ids"]
+        )
+
+    loss = outputs.loss
+    perplexity = torch.exp(loss)
+
+    return perplexity.item()
+
 def scrape_article(laman, max_page):
     total_articles = 0
     # Buat JSONL buat news site
@@ -292,6 +313,12 @@ def scrape_article(laman, max_page):
                         except Exception:
                             continue
 
+                        # perplexity based scoring
+                        perplexity = calculate_perplexity(content_)
+                        if perplexity > 500:
+                            tqdm.write(f"Filtered out low-quality article (perplexity > 500): {headline[:40]}")
+                            continue
+
                         # Penanda kalau success ngeproses artikelnya
                         tqdm.write(f"Success [{category}]: {headline[:50]}")
                         total_articles += 1
@@ -312,7 +339,7 @@ def scrape_article(laman, max_page):
     print(f"\nFinished scraping! Saved total {total_articles} articles to articles.jsonl")
 
 def main():
-    scrape_article(laman_detik + laman_cnn + laman_tribun, 1)
+    scrape_article(laman_detik + laman_cnn + laman_tribun, 5)
 
 if __name__ == "__main__":
     main()

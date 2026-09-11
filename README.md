@@ -22,7 +22,7 @@ flowchart TD
     B -->|"Fetch Article Body"| C["Boilerplate & Ad Sanitization"]
     C -->|"Strip Ads & Regex Cleaning"| D["Length & Language Filter"]
     D -->|"< 50 Words / Non-ID"| X["Dropped Article"]
-    D -->|"Passe  d"| E["Statistical Heuristic Quality Filters"]
+    D -->|"Passed"| E["Statistical Heuristic Quality Filters"]
     E -->|"Symbol / Digit / Repetitive / Caps Ratios"| X
     E -->|"Passed Quality Checks"| F["Export to Structured JSONL<br/>articles.jsonl"]
 ```
