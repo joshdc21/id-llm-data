@@ -10,6 +10,7 @@ from langdetect import detect
 import re
 import torch
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from datasketch import MinHash, MinHashLSH
 
 model_name = "cahya/gpt2-small-indonesian-522M"
 tokenizer = GPT2Tokenizer.from_pretrained(model_name)
@@ -65,6 +66,19 @@ day = {
     "Senin": "Mon", "Selasa": "Tue", "Rabu": "Wed", "Kamis": "Thu",
     "Jumat": "Fri", "Sabtu": "Sat", "Minggu": "Sun"
 }
+
+# Inisialisasi MinHash LSH
+num_perm = 128
+mh_lsh = MinHashLSH(threshold=0.7, num_perm=num_perm)
+
+def get_min_hash(text, num_perm=num_perm):
+    m = MinHash(num_perm=num_perm)
+    words = text.lower().split()
+    n = 5
+    for i in range(len(words) - n + 1):
+        kgram = " ".join(words[i:i+n])
+        m.update(kgram.encode('utf-8'))
+    return m 
 
 def parse_date(date_str):
     if not date_str:
@@ -198,7 +212,7 @@ def scrape_article(laman, max_page):
                 - CNN/Detik pake <article>
                 - Tribun pake <ul class = "lsi"> atau <ul id = "latestul">
                 """
-                lists = sop.find_all("article") or sop.select("ul.lsi > li, #latestul > li")
+                lists = sop.find_all("article") or sop.select("ul.lsi > li, #latestul > li") or sop.select("a.article_inview, a[dtr-act='artikel']")
 
                 if not lists:
                     tqdm.write(f"No more articles for {category} on page {page}")
@@ -214,7 +228,9 @@ def scrape_article(laman, max_page):
                         headline = h3_tag.get_text(strip=True) if h3_tag else ""
 
                         # URL
-                        a_tag = (h3_tag.find("a") if h3_tag else None) or x.find("a")
+                        a_tag = (x if x.name == "a" else None) or \
+                                (h3_tag.find("a") if h3_tag else None) or \
+                                 x.find("a")
                         if not a_tag or "href" not in a_tag.attrs:
                             continue
                         article_url = a_tag["href"].strip()
@@ -278,6 +294,8 @@ def scrape_article(laman, max_page):
                                 content_ = content_.replace(c, "")
                             # Remove [Gambas:...] with regex
                             content_ = re.sub(r"\[Gambas.*?\]", "", content_).strip()
+                            content_ = re.sub(r"Diskusi\s+beasiswa.*", "", content_, flags=re.IGNORECASE)
+                            content_ = content_.strip()
                         else:
                             content_ = ''
 
@@ -312,6 +330,21 @@ def scrape_article(laman, max_page):
                                 continue
                         except Exception:
                             continue
+
+                        """
+                        1. Create minhash for the content
+                        2. Search LSH Index for similar articles
+                        3. If similar skip the article
+                        4. Keep the article for next checking if not similar
+                        """
+                        article_hash = get_min_hash(content_)
+                        nearest = mh_lsh.query(article_hash)
+
+                        if nearest:
+                            tqdm.write(f"Filtered out duplicate article: {headline[:40]}")
+                            continue
+                        
+                        mh_lsh.insert(article_url, article_hash)
 
                         # perplexity based scoring
                         perplexity = calculate_perplexity(content_)
