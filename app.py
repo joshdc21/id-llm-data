@@ -80,6 +80,18 @@ def get_min_hash(text, num_perm=num_perm):
         m.update(kgram.encode('utf-8'))
     return m 
 
+def redact_text(text):
+    patterns = {
+        "EMAIL": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b',
+        "PHONE": r'\b(?:\+62|62|0)8\d{8,11}\b',
+        "ID": r'\b\d{16}\b',
+        "URL": r'https?:\/\/[^\s"]+|www\.[^\s"]+'
+    }
+
+    for label, pattern in patterns.items():
+        text = re.sub(pattern, f"[{label}]", text)
+    return text
+
 def parse_date(date_str):
     if not date_str:
         return None
@@ -352,6 +364,9 @@ def scrape_article(laman, max_page):
                             tqdm.write(f"Filtered out low-quality article (perplexity > 500): {headline[:40]}")
                             continue
 
+                        # Redact PII (email, phone, NIK/ID) and URLs before saving
+                        content_ = redact_text(content_)
+
                         # Penanda kalau success ngeproses artikelnya
                         tqdm.write(f"Success [{category}]: {headline[:50]}")
                         total_articles += 1
@@ -372,7 +387,7 @@ def scrape_article(laman, max_page):
     print(f"\nFinished scraping! Saved total {total_articles} articles to articles.jsonl")
 
 def main():
-    scrape_article(laman_detik + laman_cnn + laman_tribun, 5)
+    scrape_article(laman_detik + laman_cnn + laman_tribun, 1)
 
 if __name__ == "__main__":
     main()
