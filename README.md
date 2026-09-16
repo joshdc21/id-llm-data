@@ -1,6 +1,6 @@
 # Indonesian Text Corpus Pipeline for LLM Pretraining
 
-A high-performance data collection, cleaning, and heuristic quality filtering pipeline designed to build a clean **Indonesian-language pretraining text corpus** from real-world web news sources (*Detik.com*, *CNN Indonesia*, and *Tribunnews*).
+A high-performance data collection, cleaning, heuristic quality filtering, deduplication, and PII redaction pipeline designed to build a clean **Indonesian-language pretraining text corpus** from real-world web news sources (*Detik.com*, *CNN Indonesia*, and *Tribunnews*).
 
 This project simulates the data engineering and quality validation workflows used by LLM data teams to transform noisy raw web data into high-quality training datasets for Large Language Models.
 
@@ -8,9 +8,9 @@ This project simulates the data engineering and quality validation workflows use
 
 ## 📌 Project Overview
 
-Raw web text cannot be fed directly into an LLM for pretraining due to boilerplate noise (advertisements, navigation links, scroll prompts), low-quality text dumps, near-duplicate articles, and non-target languages.
+Raw web text cannot be fed directly into an LLM for pretraining due to boilerplate noise (advertisements, navigation links, scroll prompts), low-quality text dumps, near-duplicate articles, incoherent text, and sensitive personally identifiable information (PII).
 
-This repository implements an automated, multi-stage pipeline that collects, cleans, and statistically filters raw Indonesian news articles across 5 major categories: **Nasional, Internasional, Ekonomi, Teknologi,** and **Olahraga**.
+This repository implements an automated, multi-stage pipeline that collects, cleans, statistically filters, deduplicates, quality-scores, and scrub-sanitizes raw Indonesian news articles across 5 major categories: **Nasional, Internasional, Ekonomi, Teknologi,** and **Olahraga**.
 
 ---
 
@@ -24,7 +24,12 @@ flowchart TD
     D -->|"< 50 Words / Non-ID"| X["Dropped Article"]
     D -->|"Passed"| E["Statistical Heuristic Quality Filters"]
     E -->|"Symbol / Digit / Repetitive / Caps Ratios"| X
-    E -->|"Passed Quality Checks"| F["Export to Structured JSONL<br/>articles.jsonl"]
+    E -->|"Passed Quality Checks"| F["MinHash LSH Near-Duplicate Detection"]
+    F -->|"Near-Duplicate (> 0.7 Jaccard)"| X
+    F -->|"Unique"| G["GPT-2 Perplexity Quality Scoring"]
+    G -->|"Perplexity > 500"| X
+    G -->|"Passed Coherence"| H["PII & URL Redaction"]
+    H -->|"Redacted ([EMAIL], [PHONE], [ID], [URL])"| I["Export to Structured JSONL<br/>articles.jsonl"]
 ```
 
 ### 🛠️ Key Pipeline Stages
@@ -54,6 +59,21 @@ Implemented via document-level statistical rules to drop low-quality articles:
 | **`digit_to_word_ratio`** | Checks ratio of distinct number tokens (`\b\d+\b`) to words (`> 0.3`) | Drops raw financial tables, stock tickers, and score sheets. |
 | **`repetitive_text_ratio`** | Checks ratio of repeated 8-grams to unique 8-grams (`> 0.3`) | Detects and drops web-crawler duplicate loops and repeated site footers. |
 | **`all_caps_ratio`** | Checks ratio of uppercase words to total words (`> 0.5`) | Drops clickbait shouting, SPAM, and header lists. |
+
+#### 5. MinHash / LSH Near-Duplicate Detection (Stage 5)
+- **MinHash & LSH Indexing**: Computes MinHash signatures over 5-gram word windows (`num_perm=128`) using `datasketch`.
+- **Similarity Threshold**: Uses Locality-Sensitive Hashing (`MinHashLSH`) with a Jaccard similarity threshold of `0.7` to detect and filter out syndicated, mirrored, or repeated news articles across domain feeds.
+
+#### 6. Perplexity-Based Coherence Scoring (Stage 4)
+- **Pretrained LM Evaluation**: Evaluates text fluency and coherence using `cahya/gpt2-small-indonesian-522M` via `transformers` and `torch`.
+- **Perplexity Thresholding**: Drops incoherent, corrupted, or machine-generated text with a perplexity score exceeding `500`.
+
+#### 7. PII Detection & Redaction (Stage 6)
+- **Automated Scrubbing**: Scans clean documents right before export using `redact_text()` regex pattern matching:
+  - **Email Addresses**: Replaced with `[EMAIL]`
+  - **Indonesian Phone Numbers**: `+62`, `62`, or `08...` formats replaced with `[PHONE]`
+  - **16-Digit NIK / KTP / KK IDs**: Replaced with `[ID]`
+  - **HTTP/HTTPS & WWW URLs**: Replaced with `[URL]`
 
 ---
 
@@ -99,7 +119,7 @@ Output records are appended line-by-line in JSON Lines (`JSONL`) format:
 
 3. **Install Dependencies**:
    ```bash
-   pip install requests beautifulsoup4 tqdm langdetect lxml
+   pip install requests beautifulsoup4 tqdm langdetect lxml datasketch torch transformers
    ```
 
 ### Running the Pipeline
@@ -114,7 +134,8 @@ Progress logs and filtered article counts will display in real time via `tqdm`:
 --- Scraping Kategori: nasional ---
 Scraping page 1 | url https://www.tribunnews.com/index-news/nasional?page=1
 Filtered out article with too many digits: Grafik Pergerakan Saham Sektor
-Success [nasional]: Dudung Tegaskan Ulta Levenia Nababan Bukan Lagi
+Filtered out duplicate article: Dudung Tegaskan Ulta Levenia Nababan
+Success [nasional]: Judul Artikel Berita Terbaru...
 [nasional] Halaman 1: 100%|████████████████████████| 20/20 [00:15<00:00]
 
 Finished scraping! Saved total articles to articles.jsonl
@@ -128,7 +149,9 @@ Finished scraping! Saved total articles to articles.jsonl
 - **Web Crawling:** `requests`, `BeautifulSoup4`, `lxml`
 - **Progress & CLI:** `tqdm`
 - **Language Detection:** `langdetect`
-- **Text Processing & Regex:** `re`, `urllib.parse`
+- **Deduplication:** `datasketch` (MinHash / LSH)
+- **Quality Scoring:** `transformers`, `torch` (`cahya/gpt2-small-indonesian-522M`)
+- **PII Scrubbing & Regex:** `re`, `urllib.parse`
 - **Storage Format:** JSONL (JSON Lines)
 
 ---
@@ -138,7 +161,7 @@ Finished scraping! Saved total articles to articles.jsonl
 - [x] **Stage 1**: Multi-source web crawling & DOM extraction (Detik, CNN, Tribun).
 - [x] **Stage 2**: Language detection (`langdetect`) & length filtering.
 - [x] **Stage 3**: Statistical heuristic quality filtering (symbol, digit, n-gram repetition, all-caps).
-- [ ] **Stage 4**: Perplexity-based text quality scoring using a pretrained language model (`transformers` / IndoBERT).
-- [ ] **Stage 5**: MinHash / LSH Near-Duplicate Detection (`datasketch`).
-- [ ] **Stage 6**: PII Detection & Redaction (Regex for phone numbers, email addresses, NIK/IDs).
-- [ ] **Stage 7–9**: Quality annotation sampling, intra-rater consistency analysis, and final report.
+- [x] **Stage 4**: Perplexity-based text quality scoring using a pretrained Indonesian GPT-2 model (`cahya/gpt2-small-indonesian-522M`).
+- [x] **Stage 5**: MinHash / LSH Near-Duplicate Detection (`datasketch`).
+- [x] **Stage 6**: PII Detection & Redaction (Regex scrubbing for email, phone numbers, NIK/IDs, URLs).
+- [ ] **Stage 7–9**: Quality annotation sampling, intra-rater consistency analysis (Cohen's kappa), and final report.
