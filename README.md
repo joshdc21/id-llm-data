@@ -164,4 +164,3 @@ Finished scraping! Saved total articles to articles.jsonl
 - [x] **Stage 4**: Perplexity-based text quality scoring using a pretrained Indonesian GPT-2 model (`cahya/gpt2-small-indonesian-522M`).
 - [x] **Stage 5**: MinHash / LSH Near-Duplicate Detection (`datasketch`).
 - [x] **Stage 6**: PII Detection & Redaction (Regex scrubbing for email, phone numbers, NIK/IDs, URLs).
-- [ ] **Stage 7–9**: Quality annotation sampling, intra-rater consistency analysis (Cohen's kappa), and final report.
