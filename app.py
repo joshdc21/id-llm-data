@@ -11,10 +11,13 @@ import re
 import torch
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from datasketch import MinHash, MinHashLSH
+from concurrent.futures import ThreadPoolExecutor
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 model_name = "cahya/gpt2-small-indonesian-522M"
 tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-model = GPT2LMHeadModel.from_pretrained(model_name)
+model = GPT2LMHeadModel.from_pretrained(model_name).to(device)
 model.eval()
 
 # Header so you don't get blocked by the server
@@ -70,6 +73,14 @@ day = {
 # Inisialisasi MinHash LSH
 num_perm = 128
 mh_lsh = MinHashLSH(threshold=0.7, num_perm=num_perm)
+
+def fetch_single_article(article_info):
+    url = article_info["url"]
+    try:
+        res = req.get(url, headers=hades, timeout=10)
+        return {**article_info, "html": res.text}
+    except Exception as e:
+        return {**article_info, "html": None, "error": str(e)}
 
 def get_min_hash(text, num_perm=num_perm):
     m = MinHash(num_perm=num_perm)
@@ -188,30 +199,39 @@ def all_caps_ratio(text):
     return True
 
 def calculate_perplexity(text):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512).to(device)
     with torch.no_grad():
         outputs = model(
             input_ids=inputs["input_ids"],
             labels=inputs["input_ids"]
         )
-
     loss = outputs.loss
     perplexity = torch.exp(loss)
-
     return perplexity.item()
 
+
 def scrape_article(laman, max_page):
+    raw_total = 0
     total_articles = 0
+    lang_filter = 0
+    heuristic_filter = 0
+    perplexity_filter = 0
+    duplicate_filter = 0
+    length_filter = 0
+
     # Buat JSONL buat news site
     with open("articles.jsonl", "w", encoding="utf-8") as f:
 
         # iterate semua laman yang ada di daftar laman
         for category, url_template in laman:
             print(f"\n--- Scraping Kategori: {category} ---")
+            stop_category = False
             
             # substitute {page} dengan angka mulai dari 1 sampai max_page
             for page in range(1, max_page + 1):
+                if stop_category:
+                    break
+
                 url = url_template.format(page=page)
                 print(f"Scraping page {page} | url {url}")
 
@@ -230,8 +250,10 @@ def scrape_article(laman, max_page):
                     tqdm.write(f"No more articles for {category} on page {page}")
                     break
 
-                # Loading bar untuk setiap page
-                for x in tqdm(lists, desc=f"[{category}] Halaman {page}", unit="artikel"):
+                candidate_items = []
+
+                # Collect article links & metadata from index cards
+                for x in lists:
                     try:
                         # Headline
                         h3_tag = x.find('h3', class_='media__title') or \
@@ -269,12 +291,44 @@ def scrape_article(laman, max_page):
                             tqdm.write(f"Fail to parse date: '{date_str}'")
                             continue
 
-                        if not (start_date <= parsed_dt <= end_date):
+                        # Early exit on date cutoff
+                        if parsed_dt < start_date:
+                            tqdm.write(f"[{category}] Reached date cutoff ({parsed_dt.strftime('%Y-%m-%d')} < {start_date.strftime('%Y-%m-%d')}). Stopping category.")
+                            stop_category = True
+                            break
+
+                        if parsed_dt > end_date:
                             continue
 
-                        # Get article content
-                        res_ = req.get(article_url, headers=hades).text
-                        sop_ = bs(res_, 'lxml')
+                        candidate_items.append({
+                            "url": article_url,
+                            "headline": headline,
+                            "source": source,
+                            "parsed_dt": parsed_dt
+                        })
+
+                    except Exception as e:
+                        tqdm.write(f"Error parsing index card: {str(e)}")
+
+                if not candidate_items:
+                    continue
+
+                # Multithreaded fetch of candidate article bodies
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    downloaded_articles = list(executor.map(fetch_single_article, candidate_items))
+
+                # Process & filter each downloaded article
+                for item in tqdm(downloaded_articles, desc=f"[{category}] Halaman {page}", unit="artikel"):
+                    try:
+                        if not item.get("html"):
+                            continue
+
+                        article_url = item["url"]
+                        headline = item["headline"]
+                        source = item["source"]
+                        parsed_dt = item["parsed_dt"]
+
+                        sop_ = bs(item["html"], 'lxml')
 
                         # Container utama content article
                         content_div = (
@@ -286,6 +340,7 @@ def scrape_article(laman, max_page):
                             or sop_.find("div", class_="txt-article")
                             or sop_.find("div", class_="side-article")
                         )   
+                        raw_total += 1
 
                         """
                         Ambil semua paragraph, terus di combine
@@ -313,34 +368,41 @@ def scrape_article(laman, max_page):
 
                         # Skip artikel yang hanya 50 words or less
                         if not content_ or len(content_.split()) < 50:
+                            length_filter += 1
                             continue
                         
                         # Skip corrupted text
                         if not symbol_to_word_ratio(content_):
+                            heuristic_filter += 1
                             tqdm.write(f"Filtered out article with too many symbols: {headline[:40]}")
                             continue
                         
                         # Skip stats table/raw stock table
                         if not digit_to_word_ratio(content_):
+                            heuristic_filter += 1
                             tqdm.write(f"Filtered out article with too many digits: {headline[:40]}")
                             continue
                         
                         # Skip duplicates
                         if not repetitive_text_ratio(content_):
+                            heuristic_filter += 1
                             tqdm.write(f"Filtered out article with repetitive text: {headline[:40]}")
                             continue
                         
                         # Skip all caps
                         if not all_caps_ratio(content_):
+                            heuristic_filter += 1
                             tqdm.write(f"Filtered out article with all caps: {headline[:40]}")
                             continue
                         
                         # Skip artikel yang bukan bahasa indonesia
                         try:
                             if detect(content_) != "id":
+                                lang_filter += 1
                                 tqdm.write(f"Filtered out non-Indonesian article: {headline[:40]}")
                                 continue
                         except Exception:
+                            lang_filter += 1
                             continue
 
                         """
@@ -353,6 +415,7 @@ def scrape_article(laman, max_page):
                         nearest = mh_lsh.query(article_hash)
 
                         if nearest:
+                            duplicate_filter += 1
                             tqdm.write(f"Filtered out duplicate article: {headline[:40]}")
                             continue
                         
@@ -361,6 +424,7 @@ def scrape_article(laman, max_page):
                         # perplexity based scoring
                         perplexity = calculate_perplexity(content_)
                         if perplexity > 500:
+                            perplexity_filter += 1
                             tqdm.write(f"Filtered out low-quality article (perplexity > 500): {headline[:40]}")
                             continue
 
@@ -374,7 +438,7 @@ def scrape_article(laman, max_page):
                         # Simpan di csv dengan Kategori
                         f.write(json.dumps({
                             "Link": article_url,
-                            "Source":source,
+                            "Source": source,
                             "Kategori": category,
                             "Title": headline,
                             "Tanggal": parsed_dt.strftime("%Y-%m-%d %H:%M"),
@@ -382,12 +446,26 @@ def scrape_article(laman, max_page):
                         }, ensure_ascii=False) + "\n")
 
                     except Exception as e:
-                        tqdm.write(f"Error scraping {x.find('a')['href'] if x.find('a') else 'article'} | {str(e)}")
+                        tqdm.write(f"Error scraping {item.get('url', 'article')} | {str(e)}")
+                    
+
+    metrics = {
+        "raw_total": raw_total,
+        "length_filter": length_filter,
+        "heuristic_filter": heuristic_filter,
+        "lang_filter": lang_filter,
+        "duplicate_filter": duplicate_filter,
+        "perplexity_filter": perplexity_filter,
+        "total_articles": total_articles
+    }
+
+    with open("metrics.json", "w") as f:
+        json.dump(metrics, f, indent=4)
 
     print(f"\nFinished scraping! Saved total {total_articles} articles to articles.jsonl")
 
 def main():
-    scrape_article(laman_detik + laman_cnn + laman_tribun, 1)
+    scrape_article(laman_detik + laman_cnn + laman_tribun, 20)
 
 if __name__ == "__main__":
     main()
